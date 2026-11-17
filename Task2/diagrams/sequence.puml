@@ -1,0 +1,91 @@
+@startuml
+title Последовательность сценариев (успех, retry, fallback‑Redis, circuit‑breaker)
+
+actor DSP as Пользователь
+participant "API‑Gateway\n" as GW
+participant "Ad Service\n" as AD
+participant "RTB Service\n" as RTB
+participant "Delivery Service\n" as DEL
+database "Redis (кеш)" as RED
+database "PostgreSQL\n(Campaign DB, read‑replica)" as DB
+
+== 0️⃣ УСПЕШНЫЙ СЦЕНАРИЙ ==
+Пользователь -> GW : OpenRTB‑запрос
+activate GW
+GW -> AD : gRPC BidRequest (Попытка 1)
+activate AD
+AD -> RTB : gRPC Bid (Попытка 1)
+activate RTB
+RTB -> DEL : gRPC Deliver
+activate DEL
+DEL --> RTB : 200 OK (баннер)
+RTB --> AD : 200 OK
+AD --> GW : 200 OK
+GW --> Пользователь : 200 OK (баннер)
+deactivate DEL
+deactivate RTB
+deactivate AD
+deactivate GW
+
+== 1️⃣ RETRY – первая попытка завершается ошибкой ==
+Пользователь -> GW : OpenRTB‑запрос (новый)
+activate GW
+GW -> AD : gRPC BidRequest (Попытка 1)
+activate AD
+AD -> AD : timeout / ошибка
+AD --> GW : HTTP 500
+note right of GW : Ошибка → включаем Retry\n(экспоненциальный back‑off, макс 3 попытки)
+GW -> AD : gRPC BidRequest (Попытка 2)  <-- повтор
+activate AD
+AD -> RTB : gRPC Bid (Попытка 2)
+activate RTB
+RTB -> DEL : gRPC Deliver
+activate DEL
+DEL --> RTB : 200 OK (баннер)
+RTB --> AD : 200 OK
+AD --> GW : 200 OK
+GW --> Пользователь : 200 OK (баннер)
+deactivate DEL
+deactivate RTB
+deactivate AD
+deactivate GW
+
+== 2️⃣ FALLBACK‑чтение (Redis недоступен) ==
+Пользователь -> GW : OpenRTB‑запрос (новый)
+activate GW
+GW -> AD : gRPC BidRequest (Попытка 1)
+activate AD
+AD -> RED : Запрос кампаний и правил
+RED --> AD : timeout / ошибка
+note right of AD : Redis недоступен → читаем из\nread‑replica PostgreSQL
+AD -> DB : SELECT price_floor, budget, правила
+DB --> AD : данные
+AD -> RTB : gRPC Bid (Попытка 1)
+activate RTB
+RTB -> DEL : gRPC Deliver
+activate DEL
+DEL --> RTB : 200 OK (баннер)
+RTB --> AD : 200 OK
+AD --> GW : 200 OK
+GW --> Пользователь : 200 OK (баннер)
+deactivate DEL
+deactivate RTB
+deactivate AD
+deactivate GW
+
+== 3️⃣ CIRCUIT‑BREAKER – RTB Service недоступен ==
+Пользователь -> GW : OpenRTB‑запрос (новый)
+activate GW
+GW -> AD : gRPC BidRequest (Попытка 1)
+activate AD
+AD -> RTB : gRPC Bid (Попытка 1)
+activate RTB
+RTB -> RTB : circuit‑breaker OPEN
+RTB --> AD : 503 Service Unavailable
+note right of AD : Получили 503 → отправляем fallback‑ответ
+AD --> GW : 503 Service Unavailable (fallback‑ответ)
+GW --> Пользователь : 503 Service Unavailable (fallback‑ответ)
+deactivate RTB
+deactivate AD
+deactivate GW
+@enduml

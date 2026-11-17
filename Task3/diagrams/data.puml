@@ -1,0 +1,61 @@
+@startuml
+title Отказоустойчивость данных в ADScale (RPO / RTO)
+
+' ---------- Сервисы ----------
+node "Campaign Service" as CS {
+    component "PostgreSQL Primary\n" as CS_PG
+    component "Read‑Replica" as CS_RR1
+    component "Kafka\n " as CAM_KAF
+    component "Backup\n" as CS_BK
+}
+node "RTB Service" as RTB {
+    component "PostgreSQL Shard‑Primary\n" as RTB_PG
+    component "Read‑Replica (shard)" as RTB_RR
+    component "Redis (read‑only)\n" as RTB_RE
+    component "Backup" as RTB_BK
+}
+
+node "Statistics Service" as ST {
+    component "ClickHouse Cluster\n" as CH
+    component "Backup\n" as CH_BK
+}
+
+node "Financial Service" as FIN {
+    component "PostgreSQL Primary\n(WAL)" as FIN_PG
+    component "Read‑Replica" as FIN_RR
+    component "Kafka Compact‑Topic\n" as FIN_KAF
+    component "Backup" as FIN_BK
+}
+
+' ---------- Репликация ----------
+CS_PG --> CS_RR1 : async replication
+RTB_PG --> RTB_RR : async replication
+RTB_RE --> RTB_RR : read‑only replica
+FIN_PG --> FIN_RR : async replication
+
+' ---------- Бэкапы ----------
+CS_PG --> CS_BK : basebackup
+RTB_PG --> RTB_BK : basebackup
+RTB_RE --> RTB_BK : RDB
+FIN_PG --> FIN_BK : basebackup
+CH --> CH_BK : ClickHouse‑Backup
+
+' ---------- RPO / RTO (подписи) ----------
+note right of CS_PG
+  RPO  ≤ 1 min
+  RTO  ≤ 15 min
+end note
+note right of RTB_PG
+  RPO  ≤ 30 sec
+  RTO  ≤ 10 sec
+end note
+note right of FIN_PG
+  RPO  ≤ 1 sec
+  RTO  ≤ 1 min
+end note
+note right of CH
+  RPO  ≈ 0
+  RTO  ≤ 30 min 
+end note
+
+@enduml

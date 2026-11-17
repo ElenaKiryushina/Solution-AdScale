@@ -1,0 +1,53 @@
+@startuml
+title Компонентная диаграмма AdScale  
+
+'=== Внешний мир ===
+actor "DSP (OpenRTB‑клиент)" as DSP
+
+'=== API‑Gateway ===
+node "API‑Gateway" as GW {
+    component "<<Retry>>\nПовтор запросов (к Ad Service)" as GW_Retry
+    component "<<CircuitBreaker>>" as GW_CB
+}
+
+'=== Бизнес‑логика ===
+component "Ad Service" as AD {
+    component "<<Retry>>\nПовтор к RTB Service" as AD_Retry
+    component "<<CircuitBreaker>>\nCB к RTB Service" as AD_CB
+}
+component "RTB Service" as RTB {
+    component "<<Retry>>\nПовтор к Delivery Service" as RTB_Retry
+    component "<<CircuitBreaker>>\nCB к Delivery Service" as RTB_CB
+}
+component "Delivery Service" as DEL
+
+'=== Связи запросов ===
+DSP --> GW : OpenRTB‑запрос (HTTPS)
+
+'--- Путь через шлюз ---
+GW --> AD : gRPC BidRequest
+note right of GW_Retry : При ошибке (HTTP 500)\nвыполняется retry (max 3, exp. back‑off)
+GW_Retry --> AD : повторный запрос
+
+'--- Проверка Circuit‑Breaker в шлюзе ---
+GW_CB --> AD  : проверка CB перед отправкой
+
+'--- Внутренний поток Ad Service → RTB Service ---
+AD --> AD_Retry : gRPC Bid (кампании‑кандидаты)
+note right of AD_Retry : При сбое повторный запрос\nк RTB (max 3, эксп. back‑off)
+AD_Retry --> AD_CB : проверка CB перед вызовом RTB
+AD_CB --> RTB : gRPC Bid (кампании‑кандидаты)
+
+'--- Аукцион и доставка (с retry) ---
+RTB --> RTB_Retry : gRPC Deliver (победитель)
+note right of RTB_Retry : При сбое повторный запрос\nк Delivery (max 3, эксп. back‑off)
+RTB_Retry --> RTB_CB : проверка CB перед вызовом Delivery
+RTB_CB --> DEL : gRPC Deliver (победитель)
+
+'--- Обратные ответы ---
+DEL --> RTB : 200 OK (баннер)
+RTB --> AD  : 200 OK (BidResponse)
+AD  --> GW  : 200 OK (response)
+GW  --> DSP : 200 OK (баннер)
+
+@enduml
